@@ -1,8 +1,8 @@
-# tests/e2e/test_e2e.py
+"""End-to-End tests using Playwright for the FastAPI calculator application."""
 
-import pytest  # Import the pytest framework for writing and running tests
 
-# The following decorators and functions define E2E tests for the FastAPI calculator application.
+import pytest
+from playwright.sync_api import expect
 
 @pytest.mark.e2e
 def test_hello_world(page, fastapi_server):
@@ -16,9 +16,9 @@ def test_hello_world(page, fastapi_server):
     # Navigate the browser to the homepage URL of the FastAPI application.
     page.goto('http://localhost:8000')
     
-    # Use an assertion to check that the text within the first <h1> tag is exactly "Hello World".
-    # If the text does not match, the test will fail.
-    assert page.inner_text('h1') == 'Hello World'
+    # Use Playwright's expect to automatically wait for the element to contain the text.
+    expect(page.locator('h1')).to_have_text('Hello World')
+
 
 @pytest.mark.e2e
 def test_calculator_add(page, fastapi_server):
@@ -41,9 +41,9 @@ def test_calculator_add(page, fastapi_server):
     # Click the button that has the exact text "Add". This triggers the addition operation.
     page.click('button:text("Add")')
     
-    # Use an assertion to check that the text within the result div (with id 'result') is exactly "Result: 15".
-    # This verifies that the addition operation was performed correctly and the result is displayed as expected.
-    assert page.inner_text('#result') == 'Result: 15'
+    # THE FIX: Use expect() to wait for the DOM to update and display the correct result.
+    expect(page.locator('#result')).to_have_text('Result: 15')
+
 
 @pytest.mark.e2e
 def test_calculator_divide_by_zero(page, fastapi_server):
@@ -66,8 +66,6 @@ def test_calculator_divide_by_zero(page, fastapi_server):
     
     # Click the button that has the exact text "Divide". This triggers the division operation.
     page.click('button:text("Divide")')
-    
-    # Use an assertion to check that the text within the result div (with id 'result') is exactly
-    # "Error: Cannot divide by zero!". This verifies that the application handles division by zero
-    # gracefully and displays the correct error message to the user.
-    assert page.inner_text('#result') == 'Error: Cannot divide by zero!'
+
+
+    expect(page.locator('#result')).to_have_text('Error: Cannot divide by zero!')
