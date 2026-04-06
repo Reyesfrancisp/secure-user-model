@@ -1,16 +1,14 @@
-# app/auth/dependencies.py
-
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from app.models.user import User
-from app.schemas.user import UserResponse
+from app.schemas.user import UserRead
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 def get_current_user(
     db,
     token: str = Depends(oauth2_scheme)
-) -> UserResponse:
+) -> UserRead:
     """Dependency to get current user from JWT token."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -26,11 +24,11 @@ def get_current_user(
     if user is None:
         raise credentials_exception
         
-    return UserResponse.model_validate(user)  # Updated from from_orm
+    return UserRead.model_validate(user)
 
 def get_current_active_user(
-    current_user: UserResponse = Depends(get_current_user)
-) -> UserResponse:
+    current_user: UserRead = Depends(get_current_user)
+) -> UserRead:
     """Dependency to get current active user."""
     if not current_user.is_active:
         raise HTTPException(

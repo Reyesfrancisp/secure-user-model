@@ -1,5 +1,6 @@
 # tests/conftest.py
 
+import sys
 import subprocess
 import time
 import logging
@@ -46,16 +47,14 @@ TestingSessionLocal = get_sessionmaker(engine=test_engine)
 def create_fake_user() -> Dict[str, str]:
     """
     Generate a dictionary of fake user data for testing.
-
-    Returns:
-        A dict containing user fields with fake data.
+    Note: Returns 'password' as plain text for use in .register() tests.
     """
     return {
         "first_name": fake.first_name(),
         "last_name": fake.last_name(),
-        "email": fake.unique.email(),  # Ensure uniqueness where necessary
+        "email": fake.unique.email(),
         "username": fake.unique.user_name(),
-        "password": fake.password(length=12)
+        "password": "TestPassword123!" 
     }
 
 @contextmanager
@@ -63,10 +62,6 @@ def managed_db_session():
     """
     Context manager for safe database session handling.
     Automatically handles rollback and cleanup.
-
-    Example:
-        with managed_db_session() as session:
-            user = session.query(User).first()
     """
     session = TestingSessionLocal()
     try:
@@ -106,11 +101,7 @@ class ServerStartupError(Exception):
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database(request):
     """
-    Initialize the test database once per session:
-    - Drop all existing tables to ensure a clean state.
-    - Create all tables based on the current models.
-    - Optionally initialize the database with seed data.
-    After tests, drop all tables unless --preserve-db is set.
+    Initialize the test database once per session.
     """
     logger.info("Setting up test database...")
 
@@ -122,11 +113,11 @@ def setup_test_database(request):
     Base.metadata.create_all(bind=test_engine)
     logger.info("Created all tables based on models.")
 
-    # Initialize the database (e.g., run migrations or seed data)
+    # Initialize the database
     init_db()
     logger.info("Initialized the test database with initial data.")
 
-    yield  # All tests run here
+    yield 
 
     preserve_db = request.config.getoption("--preserve-db")
     if preserve_db:
@@ -140,25 +131,18 @@ def setup_test_database(request):
 def db_session(request) -> Generator[Session, None, None]:
     """
     Provide a test-scoped database session.
-    By default, truncates all tables after each test to ensure isolation,
-    unless --preserve-db is passed.
     """
     session = TestingSessionLocal()
     try:
         yield session
     finally:
-        logger.info("db_session teardown: about to truncate tables.")
         preserve_db = request.config.getoption("--preserve-db")
-        if preserve_db:
-            logger.info("Skipping table truncation due to --preserve-db flag.")
-        else:
-            logger.info("Truncating all tables now.")
+        if not preserve_db:
+            # Truncate tables to ensure test isolation
             for table in reversed(Base.metadata.sorted_tables):
-                logger.info(f"Truncating table: {table}")
                 session.execute(table.delete())
             session.commit()
         session.close()
-        logger.info("db_session teardown: done.")
 
 # ======================================================================================
 # Test Data Fixtures
@@ -172,9 +156,14 @@ def fake_user_data() -> Dict[str, str]:
 def test_user(db_session: Session) -> User:
     """
     Create and return a single test user.
+    Correctly hashes the password before insertion to prevent UnknownHashError.
     """
     user_data = create_fake_user()
-    user = User(**user_data)
+    plain_password = user_data.pop('password')
+    
+    # Manually hash the password for direct DB insertion
+    user = User(**user_data, password_hash=User.hash_password(plain_password))
+    
     db_session.add(user)
     db_session.commit()
     db_session.refresh(user)
@@ -184,12 +173,7 @@ def test_user(db_session: Session) -> User:
 @pytest.fixture
 def seed_users(db_session: Session, request) -> List[User]:
     """
-    Create multiple test users in the database.
-
-    Usage:
-        @pytest.mark.parametrize("seed_users", [10], indirect=True)
-        def test_many_users(seed_users):
-            # test logic
+    Create multiple test users in the database with properly hashed passwords.
     """
     try:
         num_users = request.param
@@ -199,7 +183,9 @@ def seed_users(db_session: Session, request) -> List[User]:
     users = []
     for _ in range(num_users):
         user_data = create_fake_user()
-        user = User(**user_data)
+        plain_password = user_data.pop('password')
+        
+        user = User(**user_data, password_hash=User.hash_password(plain_password))
         users.append(user)
         db_session.add(user)
 
@@ -213,22 +199,26 @@ def seed_users(db_session: Session, request) -> List[User]:
 @pytest.fixture(scope="session")
 def fastapi_server():
     """
-    Start and manage a FastAPI test server, if needed for integration tests.
+    Start and manage a FastAPI test server.
     """
     server_url = 'http://127.0.0.1:8000/'
     logger.info("Starting test server...")
 
     try:
+        # Use sys.executable to ensure we use the virtual environment's Python
         process = subprocess.Popen(
-            ['python', 'main.py'],
+            [sys.executable, 'main.py'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE
         )
         if not wait_for_server(server_url, timeout=30):
+            # Print stderr to help debug why server didn't start
+            _, stderr = process.communicate(timeout=1)
+            logger.error(f"Server stderr: {stderr.decode()}")
             raise ServerStartupError("Failed to start test server")
 
         logger.info("Test server started successfully.")
-        yield  # Run all tests that depend on this fixture
+        yield 
 
     except Exception as e:
         logger.error(f"Server error: {str(e)}")
@@ -238,9 +228,7 @@ def fastapi_server():
         process.terminate()
         try:
             process.wait(timeout=5)
-            logger.info("Test server terminated gracefully.")
         except subprocess.TimeoutExpired:
-            logger.warning("Test server did not terminate in time; killing it.")
             process.kill()
 
 # ======================================================================================
@@ -248,100 +236,35 @@ def fastapi_server():
 # ======================================================================================
 @pytest.fixture(scope="session")
 def browser_context():
-    """
-    Provide a Playwright browser context for UI tests.
-    """
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-dev-shm-usage']
         )
-        logger.info("Playwright browser launched.")
-        try:
-            yield browser
-        finally:
-            logger.info("Closing Playwright browser.")
-            browser.close()
+        yield browser
+        browser.close()
 
 @pytest.fixture
 def page(browser_context: Browser):
-    """
-    Provide a new browser page for each test.
-    """
     context = browser_context.new_context(
         viewport={'width': 1920, 'height': 1080},
         ignore_https_errors=True
     )
     page = context.new_page()
-    logger.info("Created new browser page.")
-    try:
-        yield page
-    finally:
-        logger.info("Closing browser page and context.")
-        page.close()
-        context.close()
+    yield page
+    page.close()
+    context.close()
 
 # ======================================================================================
-# Pytest Command-Line Options and Test Collection
+# Pytest Command-Line Options
 # ======================================================================================
 def pytest_addoption(parser):
-    """
-    Add command line options like --preserve-db or --run-slow, if needed.
-    """
-    parser.addoption(
-        "--preserve-db",
-        action="store_true",
-        default=False,
-        help="Keep test database after tests, and skip table truncation."
-    )
-    parser.addoption(
-        "--run-slow",
-        action="store_true",
-        default=False,
-        help="Run tests marked as slow"
-    )
+    parser.addoption("--preserve-db", action="store_true", default=False)
+    parser.addoption("--run-slow", action="store_true", default=False)
 
 def pytest_collection_modifyitems(config, items):
-    """
-    Automatically skip slow tests unless --run-slow is specified.
-    """
     if not config.getoption("--run-slow"):
         skip_slow = pytest.mark.skip(reason="use --run-slow to run")
         for item in items:
             if "slow" in item.keywords:
                 item.add_marker(skip_slow)
-
-# ======================================================================================
-# How to Use This File
-# ======================================================================================
-"""
-Basic Examples:
-
-1. Test DB operations:
-   def test_create_user(db_session):
-       user = User(username="test", email="test@example.com")
-       db_session.add(user)
-       db_session.commit()
-
-2. Using fake data:
-   def test_with_fake_data(fake_user_data):
-       user = User(**fake_user_data)
-       # proceed with test logic...
-
-3. Working with a test user:
-   def test_user_update(test_user):
-       test_user.username = "new_username"
-       # test logic...
-
-4. Testing with multiple users:
-   @pytest.mark.parametrize('seed_users', [10], indirect=True)
-   def test_user_list(seed_users):
-       # seed_users contains 10 test users
-       assert len(seed_users) == 10
-
-Command Examples:
-- Basic run: pytest
-- Keep database afterward (skip table truncation & drop): pytest --preserve-db
-- Include slow tests: pytest --run-slow
-- Show output: pytest -v -s
-"""
