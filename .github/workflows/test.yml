@@ -45,8 +45,8 @@ jobs:
           source venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
-          # Only run playwright install if you actually have e2e tests using it
-          # playwright install --with-deps 
+          # REQUIRED for E2E tests: Installs Chromium and system dependencies for Playwright
+          playwright install --with-deps 
       
       - name: Run tests
         env:
@@ -54,7 +54,7 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
         run: |
           source venv/bin/activate
-          pytest --cov=app --cov-report=xml # Updated to scan your app dir
+          pytest --cov=app --cov-report=xml 
           
   security:
     needs: test
